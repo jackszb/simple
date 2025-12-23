@@ -13,27 +13,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. 检出仓库
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. 安装 Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
+      # 3. 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
+      # 4. 安装 sing-box（官方安装脚本）
       - name: Install sing-box
         run: |
           curl -fsSL https://sing-box.app/install.sh | sh
           sing-box version
 
+      # 5. 运行 Python 脚本生成 geosite-direct
       - name: Run geosite generation
         run: python3 generate_geosite.py
 
+      # 6. 提交更新（修复 if/fi）
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
@@ -44,3 +50,4 @@ jobs:
             git push
           else
             echo "No changes to commit"
+          fi
