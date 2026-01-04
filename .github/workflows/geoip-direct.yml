@@ -1,0 +1,189 @@
+name: Update geoip-direct (APNIC CN + built-in private IPs)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests netaddr
+
+      - name: Install sing-box
+        run: |
+          curl -fsSL https://sing-box.app/install.sh | sh
+          sing-box version
+
+      # ✅ 新增：确保 rule-set 目录存在
+      - name: Prepare output directory
+        run: |
+          mkdir -p rule-set
+
+      - name: Generate geoip-direct rule-set
+        run: |
+          python << 'EOF'
+          import requests
+          import netaddr
+          import json
+          import math
+          import subprocess
+          import os
+
+          APNIC_URL = "https://ftp.apnic.net/pub/stats/apnic/delegated-apnic-latest"
+
+          OUTPUT_DIR = "rule-set"
+          JSON_PATH = os.path.join(OUTPUT_DIR, "geoip-direct.json")
+          SRS_PATH  = os.path.join(OUTPUT_DIR, "geoip-direct.srs")
+
+          # ---------------------------
+          # 1. 内置 private IP（不参与 merge）
+          # ---------------------------
+          PRIVATE_IPV4 = [
+              "0.0.0.0/8",
+              "10.0.0.0/8",
+              "100.64.0.0/10",
+              "127.0.0.0/8",
+              "169.254.0.0/16",
+              "172.16.0.0/12",
+              "192.0.0.0/24",
+              "192.0.2.0/24",
+              "192.88.99.0/24",
+              "192.168.0.0/16",
+              "198.18.0.0/15",
+              "198.51.100.0/24",
+              "203.0.113.0/24",
+              "224.0.0.0/4",
+              "240.0.0.0/4",
+          ]
+
+          PRIVATE_IPV6 = [
+              "::1/128",
+              "fc00::/7",
+              "fe80::/10",
+              "ff00::/8",
+          ]
+
+          # ---------------------------
+          # 2. 解析 APNIC CN 公网 IP
+          # ---------------------------
+          ipv4 = []
+          ipv6 = []
+
+          resp = requests.get(APNIC_URL, timeout=60)
+          resp.raise_for_status()
+
+          for line in resp.text.splitlines():
+              if not line or line.startswith("#"):
+                  continue
+
+              fields = line.split("|")
+              if len(fields) < 7:
+                  continue
+
+              _, cc, rtype, start, value, *_ = fields
+              if cc != "CN":
+                  continue
+
+              try:
+                  if rtype == "ipv4":
+                      count = int(value)
+                      if count & (count - 1) != 0:
+                          continue
+                      prefix = 32 - int(math.log2(count))
+                      ipv4.append(netaddr.IPNetwork(f"{start}/{prefix}"))
+
+                  elif rtype == "ipv6":
+                      prefix = int(value)
+                      ipv6.append(netaddr.IPNetwork(f"{start}/{prefix}"))
+              except Exception:
+                  continue
+
+          # ---------------------------
+          # 3. 仅对公网 IP 做 merge
+          # ---------------------------
+          ipv4 = netaddr.cidr_merge(ipv4)
+          ipv6 = netaddr.cidr_merge(ipv6)
+
+          public_rules = [str(n) for n in ipv4 + ipv6]
+
+          # ---------------------------
+          # 4. private IP 直接追加（不 merge）
+          # ---------------------------
+          all_rules = set(public_rules)
+          all_rules.update(PRIVATE_IPV4)
+          all_rules.update(PRIVATE_IPV6)
+
+          # 排序（IPv4 在前，IPv6 在后）
+          all_rules = sorted(
+              all_rules,
+              key=lambda x: (
+                  netaddr.IPNetwork(x).version,
+                  int(netaddr.IPNetwork(x).network),
+              ),
+          )
+
+          # ---------------------------
+          # 5. 写 geoip-direct.json（到 rule-set/）
+          # ---------------------------
+          data = {
+              "version": 3,
+              "rules": [
+                  {
+                      "ip_cidr": all_rules
+                  }
+              ]
+          }
+
+          with open(JSON_PATH, "w") as f:
+              json.dump(data, f, indent=2)
+
+          # ---------------------------
+          # 6. 编译 sing-box srs（到 rule-set/）
+          # ---------------------------
+          subprocess.run(
+              [
+                  "sing-box",
+                  "rule-set",
+                  "compile",
+                  "--output",
+                  SRS_PATH,
+                  JSON_PATH,
+              ],
+              check=True,
+          )
+
+          print(f"Public IPv4 CIDR: {len(ipv4)}")
+          print(f"Public IPv6 CIDR: {len(ipv6)}")
+          print(f"Private IPv4 CIDR: {len(PRIVATE_IPV4)}")
+          print(f"Private IPv6 CIDR: {len(PRIVATE_IPV6)}")
+          print(f"Total CIDR: {len(all_rules)}")
+          EOF
+
+      - name: Commit & Push
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          git add rule-set/geoip-direct.json rule-set/geoip-direct.srs
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+
+          git commit -m "Auto update geoip-direct (APNIC CN + private IPs)"
+          git push
