@@ -17,20 +17,33 @@ os.makedirs(output_dir, exist_ok=True)
 # 下载并解析
 r = requests.get(url)
 domain_suffix_list = []
+
 for line in r.text.splitlines():
     if not line.startswith("#"):
         m = re.match(r"server=\/(.*)\/.*", line)
         if m:
             domain = m.group(1)
+
             # 去掉开头的 www.
             if domain.startswith("www."):
                 domain = domain[4:]
+
             domain_suffix_list.append(domain)
+
+# 去重（保留首次出现）
+domain_suffix_list = list(dict.fromkeys(domain_suffix_list))
+
+# 排序（保证输出稳定）
+domain_suffix_list.sort()
 
 # 构建规则
 result = {
     "version": 3,
-    "rules": [{"domain_suffix": domain_suffix_list}]
+    "rules": [
+        {
+            "domain_suffix": domain_suffix_list
+        }
+    ]
 }
 
 # 输出域名数量
@@ -49,8 +62,12 @@ else:
 if new_json != old_json:
     with open(json_path, "w", encoding="utf-8") as f:
         f.write(new_json)
+
     # 生成 SRS
-    subprocess.run(["sing-box", "rule-set", "compile", "--output", srs_path, json_path], check=True)
+    subprocess.run(
+        ["sing-box", "rule-set", "compile", "--output", srs_path, json_path],
+        check=True
+    )
     print("Updated files.")
 else:
     print("No changes detected, skip update.")
