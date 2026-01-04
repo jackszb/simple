@@ -11,6 +11,16 @@ url = "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/a
 json_path = os.path.join(output_dir, "geosite-direct.json")
 srs_path = os.path.join(output_dir, "geosite-direct.srs")
 
+# geosite-private（内置，稳定、不依赖外部）
+geosite_private = [
+    "localhost",
+    "local",
+    "localdomain",
+    "internal",
+    "lan",
+    "home",
+]
+
 # 创建输出目录
 os.makedirs(output_dir, exist_ok=True)
 
@@ -29,6 +39,9 @@ for line in r.text.splitlines():
                 domain = domain[4:]
 
             domain_suffix_list.append(domain)
+
+# 合并 geosite-private
+domain_suffix_list.extend(geosite_private)
 
 # 去重（保留首次出现）
 domain_suffix_list = list(dict.fromkeys(domain_suffix_list))
@@ -49,7 +62,7 @@ result = {
 # 输出域名数量
 print(f"Number of domains processed: {len(domain_suffix_list)}")
 
-# 格式化 JSON，保证整齐缩进和 UTF-8
+# 格式化 JSON
 new_json = json.dumps(result, indent=4, ensure_ascii=False) + "\n"
 
 # 判断是否变化
