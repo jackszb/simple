@@ -11,39 +11,54 @@ url = "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/a
 json_path = os.path.join(output_dir, "geosite-direct.json")
 srs_path = os.path.join(output_dir, "geosite-direct.srs")
 
-# geosite-private（内置，稳定、不依赖外部）
+# geosite-private（内置，规范 & 稳定）
 geosite_private = [
+    # RFC / IANA 保留
     "localhost",
     "local",
     "localdomain",
-    "internal",
     "lan",
-    "home",
+
+    # ARPA / DNS 基础设施
+    "home.arpa",
+    "in-addr.arpa",
+    "ip6.arpa",
+
+    # RFC 2606 / 6761
+    "test",
+    "example",
+    "invalid",
 ]
 
 # 创建输出目录
 os.makedirs(output_dir, exist_ok=True)
 
 # 下载并解析
-r = requests.get(url)
+r = requests.get(url, timeout=60)
+r.raise_for_status()
+
 domain_suffix_list = []
 
 for line in r.text.splitlines():
-    if not line.startswith("#"):
-        m = re.match(r"server=\/(.*)\/.*", line)
-        if m:
-            domain = m.group(1)
+    if line.startswith("#"):
+        continue
 
-            # 去掉开头的 www.
-            if domain.startswith("www."):
-                domain = domain[4:]
+    m = re.match(r"server=\/(.*)\/.*", line)
+    if not m:
+        continue
 
-            domain_suffix_list.append(domain)
+    domain = m.group(1)
+
+    # 去掉开头的 www.
+    if domain.startswith("www."):
+        domain = domain[4:]
+
+    domain_suffix_list.append(domain)
 
 # 合并 geosite-private
 domain_suffix_list.extend(geosite_private)
 
-# 去重（保留首次出现）
+# 去重（保持稳定顺序）
 domain_suffix_list = list(dict.fromkeys(domain_suffix_list))
 
 # 排序（保证输出稳定）
@@ -59,7 +74,6 @@ result = {
     ]
 }
 
-# 输出域名数量
 print(f"Number of domains processed: {len(domain_suffix_list)}")
 
 # 格式化 JSON
@@ -76,7 +90,6 @@ if new_json != old_json:
     with open(json_path, "w", encoding="utf-8") as f:
         f.write(new_json)
 
-    # 生成 SRS
     subprocess.run(
         ["sing-box", "rule-set", "compile", "--output", srs_path, json_path],
         check=True
