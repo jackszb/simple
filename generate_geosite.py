@@ -4,6 +4,7 @@ import requests
 import json
 import os
 import subprocess
+import sys
 
 output_dir = "./rule-set"
 url = "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf"
@@ -11,60 +12,57 @@ url = "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/a
 json_path = os.path.join(output_dir, "geosite-direct.json")
 srs_path = os.path.join(output_dir, "geosite-direct.srs")
 
-# geosite-private（内置，规范 & 稳定）
+# geosite-private（内置）
 geosite_private = [
-    # RFC / IANA 保留
     "localhost",
     "local",
     "localdomain",
     "lan",
-
-    # ARPA / DNS 基础设施
     "home.arpa",
     "in-addr.arpa",
     "ip6.arpa",
-
-    # RFC 2606 / 6761
     "test",
     "example",
     "invalid",
 ]
 
-# 创建输出目录
 os.makedirs(output_dir, exist_ok=True)
 
-# 下载并解析
-r = requests.get(url, timeout=60)
-r.raise_for_status()
+# 1. 下载数据（失败直接退出）
+resp = requests.get(url, timeout=60)
+resp.raise_for_status()
 
 domain_suffix_list = []
 
-for line in r.text.splitlines():
-    if line.startswith("#"):
+for line in resp.text.splitlines():
+    if not line or line.startswith("#"):
         continue
 
-    m = re.match(r"server=\/(.*)\/.*", line)
+    # 精确匹配 dnsmasq 规则
+    m = re.match(r"server=/([^/]+)/", line)
     if not m:
         continue
 
     domain = m.group(1)
 
-    # 去掉开头的 www.
     if domain.startswith("www."):
         domain = domain[4:]
 
     domain_suffix_list.append(domain)
 
-# 合并 geosite-private
+# 合并内置域名
 domain_suffix_list.extend(geosite_private)
 
-# 去重（保持稳定顺序）
-domain_suffix_list = list(dict.fromkeys(domain_suffix_list))
+# 去重 + 排序
+domain_suffix_list = sorted(set(domain_suffix_list))
 
-# 排序（保证输出稳定）
-domain_suffix_list.sort()
+if not domain_suffix_list:
+    print("ERROR: domain list is empty")
+    sys.exit(1)
 
-# 构建规则
+print(f"Number of domains processed: {len(domain_suffix_list)}")
+
+# 2. 构建 JSON（保持你现有结构）
 result = {
     "version": 3,
     "rules": [
@@ -74,26 +72,36 @@ result = {
     ]
 }
 
-print(f"Number of domains processed: {len(domain_suffix_list)}")
-
-# 格式化 JSON
 new_json = json.dumps(result, indent=4, ensure_ascii=False) + "\n"
 
-# 判断是否变化
-if os.path.exists(json_path):
-    with open(json_path, "r", encoding="utf-8") as f:
-        old_json = f.read()
-else:
-    old_json = ""
+# 3. 写入 JSON（无论是否变化，都覆盖）
+with open(json_path, "w", encoding="utf-8") as f:
+    f.write(new_json)
 
-if new_json != old_json:
-    with open(json_path, "w", encoding="utf-8") as f:
-        f.write(new_json)
+json_size = os.path.getsize(json_path)
+print(f"JSON size: {json_size} bytes")
 
-    subprocess.run(
-        ["sing-box", "rule-set", "compile", "--output", srs_path, json_path],
-        check=True
-    )
-    print("Updated files.")
-else:
-    print("No changes detected, skip update.")
+if json_size < 1000:
+    print("ERROR: JSON size too small, abort")
+    sys.exit(1)
+
+# 4. 【关键修复】始终重新编译 srs（不再依赖 diff）
+print("Compiling srs...")
+subprocess.run(
+    ["sing-box", "rule-set", "compile", "--output", srs_path, json_path],
+    check=True
+)
+
+# 5. 强校验 srs 大小
+if not os.path.exists(srs_path):
+    print("ERROR: srs not generated")
+    sys.exit(1)
+
+srs_size = os.path.getsize(srs_path)
+print(f"SRS size: {srs_size} bytes")
+
+if srs_size < 100:
+    print("ERROR: srs file too small (likely empty)")
+    sys.exit(1)
+
+print("geosite-direct updated successfully.")
